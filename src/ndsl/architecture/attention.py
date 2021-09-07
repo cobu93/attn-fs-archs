@@ -35,8 +35,8 @@ class CategoricalOneHotEncoder(FeatureEncoder):
         self.embedding = nn.utils.weight_norm(nn.Linear(n_labels, output_size))
 
     def forward(self, src):
-        inp = torch.ones((src.size()[0], self.n_labels))
-        inp[:, src.size()[1]] = 1.0
+        inp = torch.zeros((src.size()[0], self.n_labels))
+        inp[torch.arange(src.size()[0]), src.flatten().long()] = 1.0
         return self.embedding(inp)
 
 class NumericalEncoder(FeatureEncoder):
@@ -121,7 +121,7 @@ class TabularTransformer(nn.Module):
         # Decoding
         output = self.decoder(output)
         
-        return output
+        return output.squeeze()
 
 
 class MixtureModelv0(nn.Module):
