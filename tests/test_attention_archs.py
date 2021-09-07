@@ -1,7 +1,7 @@
 import unittest
 import torch
 
-from src.ndsl.architecture.attention import ConcatenateAggregator, SumAggregator, CategoricalOneHotEncoder, NumericalEncoder, TabularTransformer
+from src.ndsl.architecture.attention import ConcatenateAggregator, SumAggregator, CategoricalOneHotEncoder, NumericalEncoder, TabularTransformer, IdentityPreprocessor
 
 
 class TestAggregator(unittest.TestCase):
@@ -52,6 +52,18 @@ class TestEncoder(unittest.TestCase):
             "Output shape should be (2, 10)"
         )
 
+class TestPreprocessor(unittest.TestCase):
+
+    def test_identity_preprocessor(self):
+        preprocessor = IdentityPreprocessor()
+        input = torch.randint(0, 5, (2, 10))
+        result = preprocessor(input)
+        self.assertTrue(
+            torch.equal(input, result),
+            "Output must be equal"
+        )
+
+
 class TestTransformer(unittest.TestCase):
 
     def test_transformer(self):
@@ -67,6 +79,7 @@ class TestTransformer(unittest.TestCase):
             ]), # List of features encoders
             dropout=0.1, # Used dropout
             aggregator=None,
+            preprocessor=IdentityPreprocessor()
         )
 
         input = torch.tensor([

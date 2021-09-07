@@ -1,6 +1,18 @@
 import torch
 import torch.nn as nn
 
+class BasePreprocessor(nn.Module):
+    def __init__(self):
+        super(BasePreprocessor, self).__init__()
+
+    def forward(self, src):
+        raise NotImplementedError("This feature hasn't been implemented yet!")
+
+class IdentityPreprocessor(BasePreprocessor):
+
+    def forward(self, src):
+        return src
+
 class BaseAggregator(nn.Module):
     def __init__(self, output_size):
         super(BaseAggregator, self).__init__()
@@ -60,6 +72,7 @@ class TabularTransformer(nn.Module):
         encoders, # List of features encoders
         dropout=0.1, # Used dropout
         aggregator=None, # The aggregator for output vectors before decoder
+        preprocessor=None
         ):
 
 
@@ -97,9 +110,21 @@ class TabularTransformer(nn.Module):
         if not issubclass(type(self.aggregator), BaseAggregator):
             raise TypeError("Parameter aggregator must inherit from BaseAggregator")
 
+        self.preprocessor = preprocessor
+
+        if self.preprocessor is not None:
+            if not issubclass(type(self.preprocessor), BasePreprocessor):
+                    raise TypeError("Preprocessor must inherit from BasePreprocessor.")
+
+
         self.decoder = nn.Linear(self.aggregator.output_size, n_output)
 
     def forward(self, src):
+
+        # Preprocess source if needed
+        if self.preprocessor is not None:
+            src = self.preprocessor(src)
+
         # src came with two dims: (batch_size, num_features)
         embeddings = []
 
