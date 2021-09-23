@@ -10,4 +10,4 @@ jobs:
         with:
           to: ${{ secrets.TELEGRAM_TO }} # user id or channel name secret
           token: ${{ secrets.TELEGRAM_TOKEN }} # token secret
-          args: The ${{ github.event_name }} event triggered on ${{ repo }} [${{ job.status }}].
+          args: The ${{ github.event_name }} event triggered on ${{ github.repository }} [${{ job.status }}].
