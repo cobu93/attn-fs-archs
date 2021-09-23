@@ -226,6 +226,7 @@ class MixtureModelv0(nn.Module):
         output = torch.bmm(model_weights, output).sum(dim=1)
 
         return output
+
         
 class MixtureModelv1(nn.Module):
 
