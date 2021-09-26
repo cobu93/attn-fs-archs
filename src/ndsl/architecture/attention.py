@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class BasePreprocessor(nn.Module):
     def __init__(self):
@@ -47,9 +48,9 @@ class CategoricalOneHotEncoder(FeatureEncoder):
         self.embedding = nn.utils.weight_norm(nn.Linear(n_labels, output_size))
 
     def forward(self, src):
-        inp = torch.zeros((src.size()[0], self.n_labels))
-        inp[torch.arange(src.size()[0]), src.flatten().long()] = 1.0
-        return self.embedding(inp)
+        print(src, self.n_labels)
+        src = F.one_hot(src.long(), num_classes=self.n_labels).float()
+        return self.embedding(src)
 
 class NumericalEncoder(FeatureEncoder):
     def __init__(self, output_size):
