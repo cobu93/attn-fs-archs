@@ -48,7 +48,6 @@ class CategoricalOneHotEncoder(FeatureEncoder):
         self.embedding = nn.utils.weight_norm(nn.Linear(n_labels, output_size))
 
     def forward(self, src):
-        print(src, self.n_labels)
         src = F.one_hot(src.long(), num_classes=self.n_labels).float()
         return self.embedding(src)
 
