@@ -125,6 +125,12 @@ class TabularTransformer(nn.Module):
         if self.preprocessor is not None:
             src = self.preprocessor(src)
 
+        
+        # Validate than src features and num of encoders is the same
+        if src.size()[1] != len(self.encoders):
+            raise ValueError("The number of features must be the same as the number of encoders.\
+                 Got {} features and {} encoders".format(src.size()[1], len(self.encoders)))
+
         # src came with two dims: (batch_size, num_features)
         embeddings = []
 
