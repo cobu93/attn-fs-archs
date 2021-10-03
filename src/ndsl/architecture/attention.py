@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from torch import Tensor
+
+from typing import Optional
+
 class BasePreprocessor(nn.Module):
     def __init__(self):
         super(BasePreprocessor, self).__init__()
@@ -59,6 +63,29 @@ class NumericalEncoder(FeatureEncoder):
 
     def forward(self, src):
         return self.embedding(src)
+
+
+class TransformerEncoderLayerWithAttention(nn.TransformerEncoderLayer):
+    def __init__(self, *args, **kwargs):
+        super(TransformerEncoderLayerWithAttention, self).__init__(*args, **kwargs)
+        self.attn = None
+
+    def forward(self, 
+                src: Tensor, 
+                src_mask: Optional[Tensor] = None, 
+                src_key_padding_mask: Optional[Tensor] = None
+            ) -> Tensor:
+
+            src2, self.attn = self.self_attn(src, src, src, attn_mask=src_mask,
+                              key_padding_mask=src_key_padding_mask)
+            src = src + self.dropout1(src2)
+            src = self.norm1(src)
+            src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+            src = src + self.dropout2(src2)
+            src = self.norm2(src)
+            
+            return src
+
         
 
 class TabularTransformer(nn.Module):
@@ -72,7 +99,8 @@ class TabularTransformer(nn.Module):
         encoders, # List of features encoders
         dropout=0.1, # Used dropout
         aggregator=None, # The aggregator for output vectors before decoder
-        preprocessor=None
+        preprocessor=None,
+        return_attention = False
         ):
 
 
@@ -96,9 +124,17 @@ class TabularTransformer(nn.Module):
                 raise ValueError("All encoders must have the same output")
 
         self.encoders = encoders
+        self.return_attention = return_attention
         # Building transformer encoder
-        encoder_layers = nn.TransformerEncoderLayer(self.n_input, n_head, n_hid, dropout)
+        if self.return_attention:
+            encoder_layers = TransformerEncoderLayerWithAttention(self.n_input, n_head, n_hid, dropout)
+        else:
+            encoder_layers = nn.TransformerEncoderLayer(self.n_input, n_head, n_hid, dropout)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
+
+        self.n_head = n_head
+        self.n_hid = n_hid
+        self.dropout = dropout
 
         # The default aggregator will be ConcatenateAggregator
         if aggregator is None:
@@ -118,6 +154,72 @@ class TabularTransformer(nn.Module):
 
 
         self.decoder = nn.Linear(self.aggregator.output_size, n_output)
+
+    def set_return_attention(self, return_attention):
+
+        old_state_dict = self.transformer_encoder.state_dict()
+        is_cuda = False
+        is_training = self.transformer_encoder.training
+
+        for name, param in self.transformer_encoder.named_parameters():
+           if param.is_cuda:
+               is_cuda = True
+               break
+
+        # Building new component
+        if return_attention:
+            encoder_layers = TransformerEncoderLayerWithAttention(self.n_input, self.n_head, self.n_hid, self.dropout)
+        else:
+            encoder_layers = nn.TransformerEncoderLayer(self.n_input, self.n_head, self.n_hid, self.dropout)
+
+        # Building new encoder
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layers, 
+            self.transformer_encoder.num_layers
+        )
+
+        # Mapping features
+        self.transformer_encoder.load_state_dict(old_state_dict)
+        
+        if is_cuda:
+            self.transformer_encoder.to("cuda")
+
+        if not is_training:
+            self.transformer_encoder.eval()
+
+        self.return_attention = return_attention
+
+        return self
+
+
+    def get_attention(self, layers=None):
+
+        if layers is not None:
+            if not (isinstance(layers, list) or isinstance(layers, int) ):
+                raise TypeError("layer should be a list or an int. Got {}".format(type(layers)))
+
+            if not isinstance(layers, list) and layers >= 1:
+                layers = [layers - 1]
+            else:
+                layers = [layer - 1 for layer in layers]
+
+            for layer in layers:
+                if not isinstance(layer, int) or layer < 0 or layer >= len(self.transformer_encoder.layers):
+                    raise ValueError("Invalid value for layers. Got {}. Valid values are [None: All layers] or one in [1, {}]".format(layer + 1, len(self.transformer_encoder.layers)))
+
+        
+        attention = []
+        for layer_idx, layer_module in enumerate(self.transformer_encoder.layers):
+            if hasattr(layer_module, "attn"):
+                if layers is None:
+                    attention.append(layer_module.attn)
+                elif layer_idx in layers:
+                    attention.append(layer_module.attn)
+            else:
+                raise TypeError("Attention attribute not found. Try initializing with 'store_attention'=True")
+        
+        attention = torch.stack(attention)
+        return attention
 
     def forward(self, src):
 
@@ -152,6 +254,9 @@ class TabularTransformer(nn.Module):
         # Decoding
         output = self.decoder(output)
         
+        if self.return_attention:
+            return output.squeeze(), self.get_attention()
+
         return output.squeeze()
 
 
