@@ -218,7 +218,7 @@ class TabularTransformer(nn.Module):
             else:
                 raise TypeError("Attention attribute not found. Try initializing with 'store_attention'=True")
         
-        attention = torch.stack(attention)
+        attention = torch.stack(attention).transpose(1, 0)
         return attention
 
     def forward(self, src):
@@ -255,7 +255,8 @@ class TabularTransformer(nn.Module):
         output = self.decoder(output)
         
         if self.return_attention:
-            return output.squeeze(), self.get_attention()
+            attention = self.get_attention()
+            return output.squeeze(), attention
 
         return output.squeeze()
 
