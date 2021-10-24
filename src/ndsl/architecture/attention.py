@@ -1,92 +1,103 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
+from torchtext.nn import MultiheadAttentionContainer, InProjContainer, ScaledDotProduct
 from torch import Tensor
-
 from typing import Optional
 
-class BasePreprocessor(nn.Module):
-    def __init__(self):
-        super(BasePreprocessor, self).__init__()
 
-    def forward(self, src):
-        raise NotImplementedError("This feature hasn't been implemented yet!")
+from ndsl.module.encoder import FeatureEncoder
+from ndsl.module.preprocessor import BasePreprocessor
+from ndsl.module.aggregator import BaseAggregator, ConcatenateAggregator
 
-class IdentityPreprocessor(BasePreprocessor):
+"""
+TTransformerEncoderLayer
 
-    def forward(self, src):
-        return src
+Custom transformer layer which return attention cubes(weights)
 
-class BaseAggregator(nn.Module):
-    def __init__(self, output_size):
-        super(BaseAggregator, self).__init__()
-        self.output_size = output_size
+"""
 
-    def forward(self, src):
-        raise NotImplementedError("This feature hasn't been implemented yet!")
-
-class ConcatenateAggregator(BaseAggregator):
-    def forward(self, src):
-        return torch.flatten(src, start_dim=1)
-
-class SumAggregator(BaseAggregator):
-    def forward(self, src):
-        return torch.sum(src, dim=1, keepdim=False)
-
-
-class FeatureEncoder(nn.Module):
-    def __init__(self, output_size):
-        super(FeatureEncoder, self).__init__()
-        self.output_size = output_size
-    
-    def forward(self, src):
-        raise NotImplementedError("This feature hasn't been implemented yet!")
-
-
-class CategoricalOneHotEncoder(FeatureEncoder):
-    def __init__(self, output_size, n_labels):
-        super(CategoricalOneHotEncoder, self).__init__(output_size)
-        self.output_size = output_size
-        self.n_labels = n_labels + 1
-        self.embedding = nn.utils.weight_norm(nn.Linear(self.n_labels, output_size))
-
-    def forward(self, src):
-        src = F.one_hot(src.squeeze().long() % self.n_labels, num_classes=self.n_labels).float()
-        return self.embedding(src)
-
-class NumericalEncoder(FeatureEncoder):
-    def __init__(self, output_size):
-        super(NumericalEncoder, self).__init__(output_size)
-        self.output_size = output_size
-        self.embedding = nn.utils.weight_norm(nn.Linear(1, output_size))
-
-    def forward(self, src):
-        return self.embedding(src)
-
-
-class TransformerEncoderLayerWithAttention(nn.TransformerEncoderLayer):
+class TTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
-        super(TransformerEncoderLayerWithAttention, self).__init__(*args, **kwargs)
-        self.attn = None
+        super(TTransformerEncoderLayer, self).__init__(*args, **kwargs)
+        embed_dim = args[0] # d_model
+        self.num_heads = args[1] # nhead
+        dropout =  args[3] if len(args) > 3 else kwargs["dropout"]
+
+        in_proj_container = InProjContainer(
+                                torch.nn.Linear(embed_dim, embed_dim),
+                                torch.nn.Linear(embed_dim, embed_dim),
+                                torch.nn.Linear(embed_dim, embed_dim)
+                            )
+
+        self.self_attn = MultiheadAttentionContainer(
+                            self.num_heads,
+                            in_proj_container,
+                            ScaledDotProduct(dropout=dropout),
+                            torch.nn.Linear(embed_dim, embed_dim)
+                        )
 
     def forward(self, 
                 src: Tensor, 
-                src_mask: Optional[Tensor] = None, 
-                src_key_padding_mask: Optional[Tensor] = None
+                src_mask: Optional[Tensor] = None
             ) -> Tensor:
 
-            src2, self.attn = self.self_attn(src, src, src, attn_mask=src_mask,
-                              key_padding_mask=src_key_padding_mask)
+            src2, weights = self.self_attn(src, src, src, attn_mask=src_mask)
             src = src + self.dropout1(src2)
             src = self.norm1(src)
             src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
             src = src + self.dropout2(src2)
             src = self.norm2(src)
-            
-            return src
 
+            if self.self_attn.batch_first:
+                batch_size = src.shape[-3]
+                num_features = src.shape[-2]
+            else:
+                batch_size = src.shape[-2]
+                num_features = src.shape[-3]
+
+            weights = weights.reshape((batch_size, -1, num_features, num_features))
+
+            return src, weights
+
+
+"""
+TTransformerEncoder
+
+Custom transformer encoder which return attention cubes (weights)
+
+"""
+
+class TTransformerEncoder(nn.TransformerEncoder):
+    
+    def __init__(self, *args, need_weights=False, **kwargs):
+        super(TTransformerEncoder, self).__init__(*args, **kwargs)
+        self.need_weights = need_weights
         
+    def forward(
+                self, 
+                src: Tensor, 
+                mask: Optional[Tensor] = None, 
+                src_key_padding_mask: Optional[Tensor] = None
+            ) -> Tensor:
+        
+        output = src
+        # At the end of the loop it will have a size of:
+        # [num_layers, batch, number of heads, number of features, number of features]
+        stacked_weights = []
+
+        for mod in self.layers:
+            output, weights = mod(output, src_mask=mask)
+
+            if self.need_weights:
+                stacked_weights.append(weights)
+
+        if self.norm is not None:
+            output = self.norm(output)
+
+        if self.need_weights:
+            return output, torch.stack(stacked_weights)
+
+        return output
 
 class TabularTransformer(nn.Module):
     
@@ -100,7 +111,7 @@ class TabularTransformer(nn.Module):
         dropout=0.1, # Used dropout
         aggregator=None, # The aggregator for output vectors before decoder
         preprocessor=None,
-        return_attention = False
+        need_weights=False
         ):
 
 
@@ -124,13 +135,11 @@ class TabularTransformer(nn.Module):
                 raise ValueError("All encoders must have the same output")
 
         self.encoders = encoders
-        self.return_attention = return_attention
+        self.__need_weights = need_weights
+
         # Building transformer encoder
-        if self.return_attention:
-            encoder_layers = TransformerEncoderLayerWithAttention(self.n_input, n_head, n_hid, dropout)
-        else:
-            encoder_layers = nn.TransformerEncoderLayer(self.n_input, n_head, n_hid, dropout)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
+        encoder_layers = TTransformerEncoderLayer(self.n_input, n_head, n_hid, dropout=dropout)
+        self.transformer_encoder = TTransformerEncoder(encoder_layers, n_layers, need_weights=self.__need_weights)
 
         self.n_head = n_head
         self.n_hid = n_hid
@@ -155,71 +164,14 @@ class TabularTransformer(nn.Module):
 
         self.decoder = nn.Linear(self.aggregator.output_size, n_output)
 
-    def set_return_attention(self, return_attention):
+    @property
+    def need_weights(self):
+        return self.__need_weights
 
-        old_state_dict = self.transformer_encoder.state_dict()
-        is_cuda = False
-        is_training = self.transformer_encoder.training
-
-        for name, param in self.transformer_encoder.named_parameters():
-           if param.is_cuda:
-               is_cuda = True
-               break
-
-        # Building new component
-        if return_attention:
-            encoder_layers = TransformerEncoderLayerWithAttention(self.n_input, self.n_head, self.n_hid, self.dropout)
-        else:
-            encoder_layers = nn.TransformerEncoderLayer(self.n_input, self.n_head, self.n_hid, self.dropout)
-
-        # Building new encoder
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layers, 
-            self.transformer_encoder.num_layers
-        )
-
-        # Mapping features
-        self.transformer_encoder.load_state_dict(old_state_dict)
-        
-        if is_cuda:
-            self.transformer_encoder.to("cuda")
-
-        if not is_training:
-            self.transformer_encoder.eval()
-
-        self.return_attention = return_attention
-
-        return self
-
-
-    def get_attention(self, layers=None):
-
-        if layers is not None:
-            if not (isinstance(layers, list) or isinstance(layers, int) ):
-                raise TypeError("layer should be a list or an int. Got {}".format(type(layers)))
-
-            if not isinstance(layers, list) and layers >= 1:
-                layers = [layers - 1]
-            else:
-                layers = [layer - 1 for layer in layers]
-
-            for layer in layers:
-                if not isinstance(layer, int) or layer < 0 or layer >= len(self.transformer_encoder.layers):
-                    raise ValueError("Invalid value for layers. Got {}. Valid values are [None: All layers] or one in [1, {}]".format(layer + 1, len(self.transformer_encoder.layers)))
-
-        
-        attention = []
-        for layer_idx, layer_module in enumerate(self.transformer_encoder.layers):
-            if hasattr(layer_module, "attn"):
-                if layers is None:
-                    attention.append(layer_module.attn)
-                elif layer_idx in layers:
-                    attention.append(layer_module.attn)
-            else:
-                raise TypeError("Attention attribute not found. Try initializing with 'store_attention'=True")
-        
-        attention = torch.stack(attention).transpose(1, 0)
-        return attention
+    @need_weights.setter
+    def need_weights(self, new_need_weights):
+        self.__need_weights = new_need_weights
+        self.transformer_encoder.need_weights = self.__need_weights
 
     def forward(self, src):
 
@@ -246,7 +198,11 @@ class TabularTransformer(nn.Module):
         embeddings = torch.stack(embeddings)
         # Encodes through transformer encoder
         # Due transpose, the output will be in format (batch, num_features, embedding_size)
-        output = self.transformer_encoder(embeddings).transpose(0, 1)
+        if self.__need_weights:
+            output, weights = self.transformer_encoder(embeddings)
+            output = output.transpose(0, 1)
+        else:
+            output = self.transformer_encoder(embeddings).transpose(0, 1)
 
         # Aggregation of encoded vectors
         output = self.aggregator(output)
@@ -254,9 +210,8 @@ class TabularTransformer(nn.Module):
         # Decoding
         output = self.decoder(output)
         
-        if self.return_attention:
-            attention = self.get_attention()
-            return output.squeeze(), attention
+        if self.__need_weights:
+            return output.squeeze(), weights
 
         return output.squeeze()
 
