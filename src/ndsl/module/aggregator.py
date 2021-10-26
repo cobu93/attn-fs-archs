@@ -16,3 +16,9 @@ class ConcatenateAggregator(BaseAggregator):
 class SumAggregator(BaseAggregator):
     def forward(self, src):
         return torch.sum(src, dim=1, keepdim=False)
+
+class CLSAggregator(BaseAggregator):
+    def forward(self, src):
+        #src with shape [batch_size, seq_len, num_features]
+        return src[:,0,:]
+        #src with shape [batch_size, num_features]
