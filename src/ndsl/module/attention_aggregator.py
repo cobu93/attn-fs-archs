@@ -9,6 +9,6 @@ class BaseAttentionAggregator(nn.Module):
 
 class NaiveAttentionAggregator(BaseAttentionAggregator):
     def forward(self, src):
-        instances = src.shape[0]
-        src = src.mean(dim=1).reshape((instances, -1))
+        instances = src.shape[1]
+        src = src.transpose(1, 0).mean(dim=2).reshape((instances, -1))
         return src

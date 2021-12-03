@@ -361,7 +361,11 @@ class MixtureModels(nn.Module):
             batch_size = embeddings.shape[-2]
             num_features = embeddings.shape[-3]
 
+        # Transpose for each layer (One)
         weights = weights.reshape((batch_size, -1, num_features, num_features))
+        # Simulating stacking
+        weights = weights.unsqueeze(0)
+
         output = output.transpose(0, 1)
         
         # Aggregation of encoded vectors
