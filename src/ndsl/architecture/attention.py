@@ -8,6 +8,7 @@ from typing import Optional
 from ndsl.module.encoder import FeatureEncoder
 from ndsl.module.preprocessor import BasePreprocessor
 from ndsl.module.aggregator import BaseAggregator, ConcatenateAggregator
+from ndsl.module.attention_aggregator import BaseAttentionAggregator, NaiveAttentionAggregator
 
 """
 TTransformerEncoderLayer
@@ -216,163 +217,179 @@ class TabularTransformer(nn.Module):
 
         return output.squeeze()
 
+        
+class MixtureModels(nn.Module):
 
-class MixtureModelv0(nn.Module):
+    def __init__(
+        self, 
+        n_head, # Number of heads per layer
+        n_hid, # Size of the MLP inside each transformer encoder layer
+        n_output, # The number of output neurons
+        encoders, # List of features encoders
+        n_models, # The number of models
+        dropout=0.1, # Used dropout
+        aggregator=None, # The aggregator for output vectors before decoder
+        attn_aggregator=None, # The aggregator for output vectors before decoder
+        preprocessor=None,
+        need_weights=False
+    ):
+        #self, ninp, nhead, nhid, nmodels, nfeatures, nclasses, dropout=0.5):
+        super(MixtureModels, self).__init__()
 
-    def __init__(self, ninp, nhead, nhid, nmodels, nfeatures, nclasses, dropout=0.5):
-        super(MixtureModelv0, self).__init__()
 
-        self.attention_mechanism = nn.MultiheadAttention(
-                                        ninp, 
-                                        nhead, 
-                                        dropout=dropout
-                                    )
+        # Verify that encoders are correct
+        if not isinstance(encoders, nn.ModuleList):
+            raise TypeError("Parameter encoders must be an instance of torch.nn.ModuleList")
 
+        # Embedding size
+        self.n_input = None
+
+        for idx, encoder in enumerate(encoders):
+            
+            if not issubclass(type(encoder), FeatureEncoder):
+                raise TypeError("All encoders must inherit from FeatureEncoder. Invalid index {}".format(idx))
+
+            if self.n_input is None:
+                self.n_input = encoder.output_size
+            elif self.n_input != encoder.output_size:
+                raise ValueError("All encoders must have the same output")
+
+        self.encoders = encoders
+        self.__need_weights = need_weights
+
+        n_features = len(self.encoders)
+       
+        in_proj_container = InProjContainer(
+                                torch.nn.Linear(self.n_input, self.n_input),
+                                torch.nn.Linear(self.n_input, self.n_input),
+                                torch.nn.Linear(self.n_input, self.n_input)
+                            )
+
+        self.self_attn = MultiheadAttentionContainer(
+                            n_head,
+                            in_proj_container,
+                            ScaledDotProduct(dropout=dropout),
+                            torch.nn.Linear(self.n_input, self.n_input)
+                        )
                     
-        self.nfeatures = nfeatures
-        self.nmodels = nmodels
-        #self.num_embedding = nn.Linear(1, ninp)
+        self.n_head = n_head
+        self.n_hid = n_hid
+        self.dropout = dropout
+        self.n_features = len(self.encoders)
 
-        self.embedding = nn.ModuleList()
-        
-        for feature in range(nfeatures):
-            self.embedding.append(nn.utils.weight_norm(nn.Linear(1, ninp)))
-        
+        # The default aggregator will be ConcatenateAggregator
+        if aggregator is None:
+            self.aggregator = ConcatenateAggregator(self.n_input * self.n_features)
+        else:
+            self.aggregator = aggregator
+
+        # Validates that aggregator inherit from BaseAggregator
+        if not issubclass(type(self.aggregator), BaseAggregator):
+            raise TypeError("Parameter aggregator must inherit from BaseAggregator")
+
+
+        # The default aggregator will be NaiveAttentionAggregator
+        if attn_aggregator is None:
+            self.attn_aggregator = NaiveAttentionAggregator()
+        else:
+            self.attn_aggregator = attn_aggregator
+
+        # Validates that aggregator inherit from BaseAggregator
+        if not issubclass(type(self.attn_aggregator), BaseAttentionAggregator):
+            raise TypeError("Parameter attn_aggregator must inherit from BaseAttentionAggregator")
+
+
+
+        self.preprocessor = preprocessor
+
+        if self.preprocessor is not None:
+            if not issubclass(type(self.preprocessor), BasePreprocessor):
+                    raise TypeError("Preprocessor must inherit from BasePreprocessor.")
+
 
         self.representation = nn.Sequential(
-                                nn.Linear(nfeatures * ninp, nhid),
-                                nn.BatchNorm1d(nhid),                          
+                                nn.Linear(self.aggregator.output_size, n_hid),
+                                nn.BatchNorm1d(n_hid),                          
                                 nn.Dropout(dropout)
                             )
 
-
         self.model_weighting = nn.Sequential(
-                                    nn.Linear(nfeatures, nmodels),
+                                    nn.Linear(self.n_features ** 2, n_models),
                                     nn.Softmax(dim=-1)
                                 )
         
         self.models = nn.ModuleList()
-        
-        for model in range(nmodels):
-            self.models.append(nn.Linear(nhid, nclasses))
-        
-    def aggregate(self, attn_mat):
-        return attn_mat.sum(dim=1)
+        self.n_models = n_models
+        for model in range(n_models):
+            self.models.append(nn.Linear(n_hid, n_output))
 
+    @property
+    def need_weights(self):
+        return self.__need_weights
+        
 
     def forward(self, src):
+
+        # Preprocess source if needed
+        if self.preprocessor is not None:
+            src = self.preprocessor(src)
+
         
-        #src = self.num_embedding(src)
-        src_nums = []
+        # Validate than src features and num of encoders is the same
+        if src.size()[1] != len(self.encoders):
+            raise ValueError("The number of features must be the same as the number of encoders.\
+                 Got {} features and {} encoders".format(src.size()[1], len(self.encoders)))
+
+        # src came with two dims: (batch_size, num_features)
+        embeddings = []
+
+        # Computes embeddings for each feature
+        for ft_idx, encoder in enumerate(self.encoders):
+            # Each encoder must return a two dims tensor (batch, embedding_size)
+            encoding = encoder(src[:, ft_idx].unsqueeze(1))
+            embeddings.append(encoding)
+
+        # embeddings has 3 dimensions (num_features, batch, embedding_size)
+        embeddings = torch.stack(embeddings)
+        # Encodes through transformer encoder
+        # Due transpose, the output will be in format (batch, num_features, embedding_size)
+        output, weights = self.self_attn(embeddings, embeddings, embeddings)
+
+        if self.self_attn.batch_first:
+            batch_size = embeddings.shape[-3]
+            num_features = embeddings.shape[-2]
+        else:
+            batch_size = embeddings.shape[-2]
+            num_features = embeddings.shape[-3]
+
+        # Transpose for each layer (One)
+        weights = weights.reshape((batch_size, -1, num_features, num_features))
+        # Simulating stacking
+        weights = weights.unsqueeze(0)
+
+        output = output.transpose(0, 1)
         
-        for feature in range(self.nfeatures):
-            src_nums.append(
-                self.embedding[feature](src[:, feature]).unsqueeze(1)
-            )
-        
-        #src_num = self.num_embedding(src[:, len(categorical_cols):])
-        src = torch.cat(src_nums, dim=1)
-        src = src.transpose(0, 1)
+        # Aggregation of encoded vectors
+        output = self.aggregator(output)
+        weights = self.attn_aggregator(weights)
 
-        attn_out, attn_mat = self.attention_mechanism(src, src, src)
-
-        attn_out = attn_out.transpose(0, 1).flatten(start_dim=1)
-        attn_mat = self.aggregate(attn_mat)
-
-        representation = self.representation(attn_out)
-
-        model_weights = self.model_weighting(attn_mat).unsqueeze(1)
+        # Get attention output representation
+        representation = self.representation(output)
+        # Get attention matrix weighting
+        model_weights = self.model_weighting(weights).unsqueeze(1)
 
         outputs = []
         
-        for model in range(self.nmodels):
+        for model in self.models:
             outputs.append(
-                self.models[model](representation)
+                model(representation)
             )
 
         output = torch.stack(outputs, dim=0).transpose(0, 1)
         output = torch.bmm(model_weights, output).sum(dim=1)
 
-        return output
 
-        
-class MixtureModelv1(nn.Module):
+        if self.__need_weights:
+            return output.squeeze(), weights
 
-    def __init__(self, ninp, nhead, nhid, nmodels, nfeatures, nclasses, dropout=0.5):
-        super(MixtureModelv1, self).__init__()
-
-        self.attention_mechanism = nn.MultiheadAttention(
-                                        ninp, 
-                                        nhead, 
-                                        dropout=dropout
-                                    )
-
-                    
-        self.nfeatures = nfeatures
-        self.nmodels = nmodels
-        #self.num_embedding = nn.Linear(1, ninp)
-
-        self.embedding = nn.ModuleList()
-        
-        for feature in range(nfeatures):
-            self.embedding.append(nn.utils.weight_norm(nn.Linear(1, ninp)))
-        
-
-        self.representation = nn.Sequential(
-                                nn.Linear(nfeatures * ninp, nhid),
-                                nn.BatchNorm1d(nhid),                          
-                                nn.Dropout(dropout)
-                            )
-
-
-        self.model_weighting = nn.Sequential(
-                                    nn.Linear(nfeatures, nmodels),
-                                    nn.Softmax(dim=-1)
-                                )
-        
-        self.models = nn.ModuleList()
-
-        self.aggregator = nn.Linear(nfeatures, nfeatures)
-        
-        for model in range(nmodels):
-            self.models.append(nn.Linear(nhid, nclasses))
-        
-    def aggregate(self, attn_mat):
-        return self.aggregator(attn_mat).sum(dim=1)
-
-
-    def forward(self, src):
-        
-        #src = self.num_embedding(src)
-        src_nums = []
-        
-        for feature in range(self.nfeatures):
-            src_nums.append(
-                self.embedding[feature](src[:, feature]).unsqueeze(1)
-            )
-        
-        #src_num = self.num_embedding(src[:, len(categorical_cols):])
-        src = torch.cat(src_nums, dim=1)
-        src = src.transpose(0, 1)
-
-        attn_out, attn_mat = self.attention_mechanism(src, src, src)
-
-        attn_out = attn_out.transpose(0, 1).flatten(start_dim=1)
-        attn_mat = self.aggregate(attn_mat)
-
-        representation = self.representation(attn_out)
-
-        model_weights = self.model_weighting(attn_mat).unsqueeze(1)
-
-        outputs = []
-        
-        for model in range(self.nmodels):
-            outputs.append(
-                self.models[model](representation)
-            )
-
-        output = torch.stack(outputs, dim=0).transpose(0, 1)
-        output = torch.bmm(model_weights, output).sum(dim=1)
-
-        return output
-
+        return output.squeeze()

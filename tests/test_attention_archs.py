@@ -6,7 +6,7 @@ from ndsl.module.aggregator import ConcatenateAggregator, SumAggregator
 from ndsl.module.encoder import CategoricalOneHotEncoder, NumericalEncoder
 from ndsl.module.preprocessor import IdentityPreprocessor
 
-from ndsl.architecture.attention import TabularTransformer
+from ndsl.architecture.attention import TabularTransformer, MixtureModels
 
 from ndsl.loss.entropy import CELWithWeightsEntropyMinimization
 
@@ -243,6 +243,41 @@ class TestTransformer(unittest.TestCase):
             "Attention not switched"
         )
 
+
+
+
+class TestMixtureModels(unittest.TestCase):
+
+    def test_mixture_models(self):
+        trans = MixtureModels(
+            n_head=2, # Number of heads per layer
+            n_hid=128, # Size of the MLP inside each transformer encoder layer
+            n_output=5, # The number of output neurons
+            encoders=torch.nn.ModuleList([
+                NumericalEncoder(10),
+                CategoricalOneHotEncoder(10, 4),
+                NumericalEncoder(10),
+            ]), # List of features encoders
+            n_models=3,
+            dropout=0.1, # Used dropout
+        )
+
+        input = torch.tensor([
+            [0.5, 1, 0.7],
+            [0.5, 3, 0.8],
+            [0.5, 1, 0.7],
+            [0.5, 3, 0.8],
+            [0.5, 1, 0.7],
+            [0.5, 3, 0.8]
+        ])
+
+        result = trans(input)
+
+        self.assertEqual(
+            result.size(), 
+            torch.Size([6, 5]), 
+            "Output shape should be (2, 10)"
+        )
 
 class TestLoss(unittest.TestCase):
 

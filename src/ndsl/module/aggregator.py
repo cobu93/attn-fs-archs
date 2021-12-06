@@ -24,8 +24,8 @@ class CLSAggregator(BaseAggregator):
         #src with shape [batch_size, num_features]
 
 class RNNAggregator(BaseAggregator):
-    def __init__(self, cell, input_size, hidden_size,
-                 num_layers, dropout, output_size):
+    def __init__(self, output_size, cell, input_size, hidden_size,
+                 num_layers, dropout):
         super(RNNAggregator, self).__init__(output_size)
         self.output_size = output_size
 
