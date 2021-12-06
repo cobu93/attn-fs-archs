@@ -179,7 +179,6 @@ class TabularTransformer(nn.Module):
         # Preprocess source if needed
         if self.preprocessor is not None:
             src = self.preprocessor(src)
-
         
         # Validate than src features and num of encoders is the same
         if src.size()[1] != len(self.encoders):
@@ -204,9 +203,11 @@ class TabularTransformer(nn.Module):
             output = output.transpose(0, 1)
         else:
             output = self.transformer_encoder(embeddings).transpose(0, 1)
+        
 
         # Aggregation of encoded vectors
         output = self.aggregator(output)
+
 
         # Decoding
         output = self.decoder(output)
