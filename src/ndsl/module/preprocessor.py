@@ -16,5 +16,6 @@ class IdentityPreprocessor(BasePreprocessor):
 class CLSPreprocessor(BasePreprocessor):
     def forward(self, src):
         #src with shape [batch_size, seq_len]
-        return torch.cat((torch.zeros(src.shape[0],1).long(), src), dim=1)
+        device = src.get_device()
+        return torch.cat((torch.zeros(src.shape[0],1).long().to(device), src), dim=1)
         #src with shape [batch_size, seq_len+1]

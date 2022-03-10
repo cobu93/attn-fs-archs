@@ -309,7 +309,8 @@ class MixtureModels(nn.Module):
 
         self.representation = nn.Sequential(
                                 nn.Linear(self.aggregator.output_size, n_hid),
-                                nn.BatchNorm1d(n_hid),                          
+                                nn.BatchNorm1d(n_hid),
+                                nn.ReLU(),                          
                                 nn.Dropout(dropout)
                             )
 
@@ -323,9 +324,16 @@ class MixtureModels(nn.Module):
         for model in range(n_models):
             self.models.append(nn.Linear(n_hid, n_output))
 
+        #self.activation = nn.ReLU()
+
     @property
     def need_weights(self):
         return self.__need_weights
+
+    
+    @need_weights.setter
+    def need_weights(self, new_need_weights):
+        self.__need_weights = new_need_weights
         
 
     def forward(self, src):
@@ -371,12 +379,12 @@ class MixtureModels(nn.Module):
         
         # Aggregation of encoded vectors
         output = self.aggregator(output)
-        weights = self.attn_aggregator(weights)
+        weights_agg = self.attn_aggregator(weights)
 
         # Get attention output representation
         representation = self.representation(output)
         # Get attention matrix weighting
-        model_weights = self.model_weighting(weights).unsqueeze(1)
+        model_weights = self.model_weighting(weights_agg).unsqueeze(1)
 
         outputs = []
         
@@ -387,9 +395,10 @@ class MixtureModels(nn.Module):
 
         output = torch.stack(outputs, dim=0).transpose(0, 1)
         output = torch.bmm(model_weights, output).sum(dim=1)
-
+        output = output.squeeze()
+        #output = self.activation(output)
 
         if self.__need_weights:
-            return output.squeeze(), weights
+            return output, weights
 
-        return output.squeeze()
+        return output
