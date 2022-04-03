@@ -11,15 +11,17 @@ class FeatureEncoder(nn.Module):
 
 
 class CategoricalOneHotEncoder(FeatureEncoder):
-    def __init__(self, output_size, n_labels):
+    def __init__(self, output_size, n_labels, eps=1e-15):
         super(CategoricalOneHotEncoder, self).__init__(output_size)
+        self.eps = eps
         self.output_size = output_size
         self.n_labels = n_labels + 1
-        self.embedding = nn.utils.weight_norm(nn.Linear(self.n_labels, output_size))
+        self.embedding = nn.Linear(self.n_labels, output_size)
 
     def forward(self, src):
         src = F.one_hot(src.squeeze().long() % self.n_labels, num_classes=self.n_labels).float()
-        return self.embedding(src)
+        out = self.embedding(src)
+        return out / out.sum()+ self.eps
 
 class NumericalEncoder(FeatureEncoder):
     def __init__(self, output_size):

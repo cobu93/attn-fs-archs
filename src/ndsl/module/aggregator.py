@@ -17,6 +17,14 @@ class SumAggregator(BaseAggregator):
     def forward(self, src):
         return torch.sum(src, dim=1, keepdim=False)
 
+class MeanAggregator(BaseAggregator):
+    def forward(self, src):
+        return torch.mean(src, dim=1, keepdim=False)
+
+class MaxAggregator(BaseAggregator):
+    def forward(self, src):
+        return torch.max(src, dim=1, keepdim=False)[0]
+
 class CLSAggregator(BaseAggregator):
     def forward(self, src):
         #src with shape [batch_size, seq_len, num_features]

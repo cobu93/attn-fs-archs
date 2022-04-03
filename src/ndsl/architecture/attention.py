@@ -5,7 +5,7 @@ from torch import Tensor
 from typing import Optional
 
 
-from ndsl.module.encoder import FeatureEncoder
+from ndsl.module.encoder import FeatureEncoder, NumericalEncoder
 from ndsl.module.preprocessor import BasePreprocessor
 from ndsl.module.aggregator import BaseAggregator, ConcatenateAggregator
 from ndsl.module.attention_aggregator import BaseAttentionAggregator, NaiveAttentionAggregator
@@ -112,11 +112,14 @@ class TabularTransformer(nn.Module):
         dropout=0.1, # Used dropout
         aggregator=None, # The aggregator for output vectors before decoder
         preprocessor=None,
-        need_weights=False
+        need_weights=False,
+        numerical_passthrough=False
         ):
 
 
         super(TabularTransformer, self).__init__()
+
+        self.numerical_passthrough = numerical_passthrough
 
         # Verify that encoders are correct
         if not isinstance(encoders, nn.ModuleList):
@@ -125,11 +128,16 @@ class TabularTransformer(nn.Module):
         # Embedding size
         self.n_input = None
 
+        self.n_numerical_features = 0
+
         for idx, encoder in enumerate(encoders):
             
             if not issubclass(type(encoder), FeatureEncoder):
                 raise TypeError("All encoders must inherit from FeatureEncoder. Invalid index {}".format(idx))
 
+            if self.numerical_passthrough and isinstance(encoder, NumericalEncoder):
+                self.n_numerical_features += 1
+            
             if self.n_input is None:
                 self.n_input = encoder.output_size
             elif self.n_input != encoder.output_size:
@@ -148,7 +156,9 @@ class TabularTransformer(nn.Module):
 
         # The default aggregator will be ConcatenateAggregator
         if aggregator is None:
-            self.aggregator = ConcatenateAggregator(self.n_input * len(self.encoders))
+            self.aggregator = ConcatenateAggregator(
+                self.n_input * (len(self.encoders) - self.n_numerical_features)
+            )
         else:
             self.aggregator = aggregator
 
@@ -162,8 +172,10 @@ class TabularTransformer(nn.Module):
             if not issubclass(type(self.preprocessor), BasePreprocessor):
                     raise TypeError("Preprocessor must inherit from BasePreprocessor.")
 
+        if self.numerical_passthrough:
+            self.numerical_layer_norm = nn.LayerNorm(self.n_numerical_features)
 
-        self.decoder = nn.Linear(self.aggregator.output_size, n_output)
+        self.decoder = nn.Linear(self.aggregator.output_size + self.n_numerical_features, n_output)
 
     @property
     def need_weights(self):
@@ -187,35 +199,56 @@ class TabularTransformer(nn.Module):
 
         # src came with two dims: (batch_size, num_features)
         embeddings = []
+        numerical_embedding = []
 
         # Computes embeddings for each feature
         for ft_idx, encoder in enumerate(self.encoders):
             # Each encoder must return a two dims tensor (batch, embedding_size)
-            encoding = encoder(src[:, ft_idx].unsqueeze(1))
-            embeddings.append(encoding)
+            if isinstance(encoder, NumericalEncoder):
+                if self.numerical_passthrough:
+                    numerical_embedding.append(src[:, ft_idx])
+                else:
+                    encoding = encoder(src[:, ft_idx].unsqueeze(1))
+                    embeddings.append(encoding)
+            else:
+                encoding = encoder(src[:, ft_idx].unsqueeze(1))
+                embeddings.append(encoding)
 
         # embeddings has 3 dimensions (num_features, batch, embedding_size)
-        embeddings = torch.stack(embeddings)
+        if len(embeddings) > 0:
+            embeddings = torch.stack(embeddings)
+
+        if len(numerical_embedding) > 0:
+            numerical_embedding = torch.stack(numerical_embedding).T
+            numerical_embedding = self.numerical_layer_norm(numerical_embedding)
+
         # Encodes through transformer encoder
         # Due transpose, the output will be in format (batch, num_features, embedding_size)
-        if self.__need_weights:
-            output, weights = self.transformer_encoder(embeddings)
-            output = output.transpose(0, 1)
-        else:
-            output = self.transformer_encoder(embeddings).transpose(0, 1)
+        output = None
+
+        if len(embeddings) > 0:
+            if self.__need_weights:
+                output, weights = self.transformer_encoder(embeddings)
+                output = output.transpose(0, 1)
+            else:
+                output = self.transformer_encoder(embeddings).transpose(0, 1)
         
+            # Aggregation of encoded vectors
+            output = self.aggregator(output)
 
-        # Aggregation of encoded vectors
-        output = self.aggregator(output)
-
+        if len(numerical_embedding) > 0:
+            if output is not None:
+                output = torch.cat([output, numerical_embedding], dim=-1)
+            else:
+                output = numerical_embedding
 
         # Decoding
         output = self.decoder(output)
-        
-        if self.__need_weights:
-            return output.squeeze(), weights
 
-        return output.squeeze()
+        if self.__need_weights:
+            return output.squeeze(dim=-1), weights
+
+        return output.squeeze(dim=-1)
 
         
 class MixtureModels(nn.Module):

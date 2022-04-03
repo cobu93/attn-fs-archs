@@ -243,6 +243,46 @@ class TestTransformer(unittest.TestCase):
             "Attention not switched"
         )
 
+    def test_numerical_passthrough(self):
+        error = False
+
+        trans = TabularTransformer(
+            n_head=2, # Number of heads per layer
+            n_hid=128, # Size of the MLP inside each transformer encoder layer
+            n_layers=3, # Number of transformer encoder layers    
+            n_output=5, # The number of output neurons
+            encoders=torch.nn.ModuleList([
+                NumericalEncoder(10),
+                CategoricalOneHotEncoder(10, 4),
+                NumericalEncoder(10)
+            ]), # List of features encoders
+            dropout=0.1, # Used dropout
+            aggregator=None,
+            preprocessor=IdentityPreprocessor(),
+            need_weights=True,
+            numerical_passthrough=True
+        )
+
+        input = torch.tensor([
+            [0.5, 1, 0.7],
+            [0.5, 3, 0.8]
+        ])
+
+        result, attn = trans(input)
+        
+        self.assertEqual(
+            attn.size(),
+            # [num_layers, batch, number of heads, number of features, number of features]
+            torch.Size([3, 2, 2, 1, 1]),
+            f"Attention should be of size [2, 2, 3, 3]. Got {attn.size()} instead"
+        )
+
+        self.assertEqual(
+            result.size(),
+            # [num_layers, batch, number of heads, number of features, number of features]
+            torch.Size([2, 5]),
+            f"Output should be of size [2, 5]. Got {result.size()} instead"
+        )
 
 
 
