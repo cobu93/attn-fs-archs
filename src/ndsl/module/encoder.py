@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -19,9 +20,11 @@ class CategoricalOneHotEncoder(FeatureEncoder):
         self.embedding = nn.Linear(self.n_labels, output_size)
 
     def forward(self, src):
-        src = F.one_hot(src.squeeze().long() % self.n_labels, num_classes=self.n_labels).float()
+        clipped = torch.clip(src.squeeze().long(), max=self.n_labels - 1)
+        clipped[clipped < 0] = self.n_labels - 1
+        src = F.one_hot(clipped, num_classes=self.n_labels).float()
         out = self.embedding(src)
-        return out / out.sum()+ self.eps
+        return out / out.sum() + self.eps
 
 class NumericalEncoder(FeatureEncoder):
     def __init__(self, output_size):
