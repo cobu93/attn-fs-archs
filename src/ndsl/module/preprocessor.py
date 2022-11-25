@@ -17,5 +17,7 @@ class CLSPreprocessor(BasePreprocessor):
     def forward(self, src):
         #src with shape [batch_size, seq_len]
         device = src.get_device()
-        return torch.cat((torch.zeros(src.shape[0],1).long().to(device), src), dim=1)
+        if device < 0:
+            device = "cpu"
+        return torch.cat((torch.ones(src.shape[0],1).long().to(device), src), dim=1)
         #src with shape [batch_size, seq_len+1]
