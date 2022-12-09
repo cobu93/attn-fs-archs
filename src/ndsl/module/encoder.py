@@ -19,12 +19,12 @@ class CategoricalOneHotEncoder(FeatureEncoder):
         self.n_labels = n_labels + 1
         self.embedding = nn.Linear(self.n_labels, output_size)
 
-    def forward(self, src):
+    def forward(self, src): 
         clipped = torch.clip(src.squeeze().long(), max=self.n_labels - 1)
         clipped[clipped < 0] = self.n_labels - 1
         src = F.one_hot(clipped, num_classes=self.n_labels).float()
         out = self.embedding(src)
-        return out / out.sum() + self.eps
+        return out / out.sum(dim=-1, keepdim=True) + self.eps
 
 class NumericalEncoder(FeatureEncoder):
     def __init__(self, output_size):
