@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torchtext.nn import MultiheadAttentionContainer, InProjContainer, ScaledDotProduct
 from torch import Tensor
 from typing import Optional
 
 
-from ndsl.module.encoder import FeatureEncoder, NumericalEncoder
+from ndsl.module.encoder import NumericalEncoder, CategoricalOneHotEncoder
 from ndsl.module.preprocessor import BasePreprocessor
 from ndsl.module.aggregator import BaseAggregator, ConcatenateAggregator
 
@@ -15,7 +16,6 @@ TTransformerEncoderLayer
 Custom transformer layer which return attention cubes(weights)
 
 """
-
 class TTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
         super(TTransformerEncoderLayer, self).__init__(*args, **kwargs)
@@ -33,7 +33,7 @@ class TTransformerEncoderLayer(nn.TransformerEncoderLayer):
                             self.num_heads,
                             in_proj_container,
                             ScaledDotProduct(dropout=dropout),
-                            torch.nn.Linear(embed_dim, embed_dim)
+                            nn.Linear(embed_dim, embed_dim)
                         )
 
     def forward(self, 
@@ -44,6 +44,7 @@ class TTransformerEncoderLayer(nn.TransformerEncoderLayer):
             src2, weights = self.self_attn(src, src, src, attn_mask=src_mask)
             src = src + self.dropout1(src2)
             src = self.norm1(src)
+                                    
             src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
             src = src + self.dropout2(src2)
             src = self.norm2(src)
@@ -107,12 +108,16 @@ class TabularTransformer(nn.Module):
         n_hid, # Size of the MLP inside each transformer encoder layer
         n_layers, # Number of transformer encoder layers    
         n_output, # The number of output neurons
-        encoders, # List of features encoders
+        embed_dim,
+        n_categories, # List of number of categories
+        n_numerical, # Number of numerical features
         dropout=0.1, # Used dropout
         aggregator=None, # The aggregator for output vectors before decoder
         preprocessor=None,
         need_weights=False,
-        numerical_passthrough=False
+        numerical_passthrough=False,
+        decoder_hidden_units=None,
+        decoder_activation_fn=None
         ):
 
 
@@ -120,33 +125,26 @@ class TabularTransformer(nn.Module):
 
         self.numerical_passthrough = numerical_passthrough
 
-        # Verify that encoders are correct
-        if not isinstance(encoders, nn.ModuleList):
-            raise TypeError("Parameter encoders must be an instance of torch.nn.ModuleList")
-
-        # Embedding size
-        self.n_input = None
-
         self.n_numerical_features = 0
 
-        for idx, encoder in enumerate(encoders):
-            
-            if not issubclass(type(encoder), FeatureEncoder):
-                raise TypeError("All encoders must inherit from FeatureEncoder. Invalid index {}".format(idx))
+        self.categorical_encoders = nn.ModuleList()
+        
+        for n_cats in n_categories:
+            self.categorical_encoders.append(CategoricalOneHotEncoder(embed_dim, n_cats))
 
-            if self.numerical_passthrough and isinstance(encoder, NumericalEncoder):
-                self.n_numerical_features += 1
-            
-            if self.n_input is None:
-                self.n_input = encoder.output_size
-            elif self.n_input != encoder.output_size:
-                raise ValueError("All encoders must have the same output")
+        self.n_numerical = n_numerical
+        self.numerical_encoders = nn.ModuleList()
 
-        self.encoders = encoders
+        if self.numerical_passthrough:
+            self.n_numerical_features = self.n_numerical
+        else:
+            for _ in range(n_numerical):
+                self.numerical_encoders.append(NumericalEncoder(embed_dim))
+            
         self.__need_weights = need_weights
 
         # Building transformer encoder
-        encoder_layers = TTransformerEncoderLayer(self.n_input, n_head, n_hid, dropout=dropout)
+        encoder_layers = TTransformerEncoderLayer(embed_dim, n_head, n_hid, dropout=dropout)
         self.transformer_encoder = TTransformerEncoder(encoder_layers, n_layers, need_weights=self.__need_weights)
 
         self.n_head = n_head
@@ -156,7 +154,7 @@ class TabularTransformer(nn.Module):
         # The default aggregator will be ConcatenateAggregator
         if aggregator is None:
             self.aggregator = ConcatenateAggregator(
-                self.n_input * (len(self.encoders) - self.n_numerical_features)
+                embed_dim * (len(self.categorical_encoders) + len(self.numerical_encoders))
             )
         else:
             self.aggregator = aggregator
@@ -174,7 +172,30 @@ class TabularTransformer(nn.Module):
         if self.numerical_passthrough:
             self.numerical_layer_norm = nn.LayerNorm(self.n_numerical_features)
 
-        self.decoder = nn.Linear(self.aggregator.output_size + self.n_numerical_features, n_output)
+        #self.decoder = nn.Linear(self.aggregator.output_size + self.n_numerical_features, n_output)
+        input_size = self.aggregator.output_size + self.n_numerical_features
+        if decoder_hidden_units is not None:
+            
+            decoder_layers  = []
+            for decoder_layer_idx, decoder_units in enumerate(decoder_hidden_units):
+                decoder_layers.append(nn.Linear(input_size, decoder_units)) 
+                input_size = decoder_units
+
+                # Check if last layer
+                if decoder_layer_idx == len(decoder_hidden_units) - 1:
+                    continue
+
+                if decoder_activation_fn is not None:
+                    try:
+                        decoder_layers.append(decoder_activation_fn[decoder_layer_idx])
+                    except:
+                        decoder_layers.append(decoder_activation_fn)
+
+            decoder_layers.append(nn.Linear(input_size, n_output))  
+            self.decoder = nn.Sequential(*decoder_layers)
+        else:
+            self.decoder = nn.Linear(self.aggregator.output_size + self.n_numerical_features, n_output)
+        
 
     @property
     def need_weights(self):
@@ -185,41 +206,32 @@ class TabularTransformer(nn.Module):
         self.__need_weights = new_need_weights
         self.transformer_encoder.need_weights = self.__need_weights
 
-    def forward(self, src):
+    def forward(self, x_categorical, x_numerical):
 
         # Preprocess source if needed
         if self.preprocessor is not None:
             src = self.preprocessor(src)
         
-        # Validate than src features and num of encoders is the same
-        if src.size()[1] != len(self.encoders):
-            raise ValueError("The number of features must be the same as the number of encoders.\
-                 Got {} features and {} encoders".format(src.size()[1], len(self.encoders)))
-
         # src came with two dims: (batch_size, num_features)
         embeddings = []
         numerical_embedding = []
 
         # Computes embeddings for each feature
-        for ft_idx, encoder in enumerate(self.encoders):
+        for ft_idx, encoder in enumerate(self.categorical_encoders):
             # Each encoder must return a two dims tensor (batch, embedding_size)
-            if isinstance(encoder, NumericalEncoder):
-                if self.numerical_passthrough:
-                    numerical_embedding.append(src[:, ft_idx])
-                else:
-                    encoding = encoder(src[:, ft_idx].unsqueeze(1))
-                    embeddings.append(encoding)
-            else:
-                encoding = encoder(src[:, ft_idx].unsqueeze(1))
+            encoding = encoder(x_categorical[:, ft_idx].unsqueeze(1))
+            embeddings.append(encoding)
+
+        if self.numerical_passthrough:
+            numerical_embedding = self.numerical_layer_norm(x_numerical)
+        else:
+            for ft_idx, encoder in enumerate(self.numerical_encoders):
+                encoding = encoder(x_numerical[:, ft_idx].unsqueeze(1))
                 embeddings.append(encoding)
 
         # embeddings has 3 dimensions (num_features, batch, embedding_size)
         if len(embeddings) > 0:
             embeddings = torch.stack(embeddings)
-
-        if len(numerical_embedding) > 0:
-            numerical_embedding = torch.stack(numerical_embedding).T
-            numerical_embedding = self.numerical_layer_norm(numerical_embedding)
 
         # Encodes through transformer encoder
         # Due transpose, the output will be in format (batch, num_features, embedding_size)
