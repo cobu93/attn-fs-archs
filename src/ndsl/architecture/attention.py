@@ -104,20 +104,21 @@ class TabularTransformer(nn.Module):
     
     def __init__(
         self, 
+        n_categories, # List of number of categories
+        n_numerical, # Number of numerical features
         n_head, # Number of heads per layer
         n_hid, # Size of the MLP inside each transformer encoder layer
         n_layers, # Number of transformer encoder layers    
         n_output, # The number of output neurons
         embed_dim,
-        n_categories, # List of number of categories
-        n_numerical, # Number of numerical features
         dropout=0.1, # Used dropout
         aggregator=None, # The aggregator for output vectors before decoder
-        preprocessor=None,
-        need_weights=False,
-        numerical_passthrough=False,
         decoder_hidden_units=None,
-        decoder_activation_fn=None
+        decoder_activation_fn=None,
+        categorical_preprocessor=None,
+        numerical_preprocessor=None,
+        need_weights=False,
+        numerical_passthrough=False
         ):
 
 
@@ -159,15 +160,21 @@ class TabularTransformer(nn.Module):
         else:
             self.aggregator = aggregator
 
+        if categorical_preprocessor is not None:
+            if not issubclass(type(categorical_preprocessor), BasePreprocessor):
+                raise TypeError("Categorical preprocessor must inherit from BasePreprocessor")
+        
+        self.categorical_preprocessor = categorical_preprocessor
+
+        if numerical_preprocessor is not None:
+            if not issubclass(type(numerical_preprocessor), BasePreprocessor):
+                raise TypeError("Numerical preprocessor must inherit from BasePreprocessor")
+        
+        self.numerical_preprocessor = numerical_preprocessor
+
         # Validates that aggregator inherit from BaseAggregator
         if not issubclass(type(self.aggregator), BaseAggregator):
             raise TypeError("Parameter aggregator must inherit from BaseAggregator")
-
-        self.preprocessor = preprocessor
-
-        if self.preprocessor is not None:
-            if not issubclass(type(self.preprocessor), BasePreprocessor):
-                    raise TypeError("Preprocessor must inherit from BasePreprocessor.")
 
         if self.numerical_passthrough:
             self.numerical_layer_norm = nn.LayerNorm(self.n_numerical_features)
@@ -196,6 +203,7 @@ class TabularTransformer(nn.Module):
         else:
             self.decoder = nn.Linear(self.aggregator.output_size + self.n_numerical_features, n_output)
         
+        
 
     @property
     def need_weights(self):
@@ -209,8 +217,12 @@ class TabularTransformer(nn.Module):
     def forward(self, x_categorical, x_numerical):
 
         # Preprocess source if needed
-        if self.preprocessor is not None:
-            src = self.preprocessor(src)
+        if self.numerical_preprocessor is not None:
+            x_numerical = self.numerical_preprocessor(x_numerical)
+
+        
+        if self.categorical_preprocessor is not None:
+            x_numerical = self.categorical_preprocessor(x_categorical)
         
         # src came with two dims: (batch_size, num_features)
         embeddings = []
@@ -228,7 +240,7 @@ class TabularTransformer(nn.Module):
             for ft_idx, encoder in enumerate(self.numerical_encoders):
                 encoding = encoder(x_numerical[:, ft_idx].unsqueeze(1))
                 embeddings.append(encoding)
-
+                
         # embeddings has 3 dimensions (num_features, batch, embedding_size)
         if len(embeddings) > 0:
             embeddings = torch.stack(embeddings)
