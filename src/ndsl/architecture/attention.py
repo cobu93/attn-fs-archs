@@ -227,8 +227,8 @@ class TabularTransformer(nn.Module):
             numerical_embedding = self.numerical_layer_norm(x_numerical)
         else:
             for ft_idx, encoder in enumerate(self.numerical_encoders):
-                encoding = encoder(x_numerical[:, ft_idx].unsqueeze(1))
-                embeddings = embeddings.cat([embeddings, encoding], dim=1)
+                encoding = encoder(x_numerical[:, ft_idx].unsqueeze(1)).unsqueeze(1)
+                embeddings = torch.cat([embeddings, encoding], dim=1)
                 
         # Encodes through transformer encoder
         # Due transpose, the output will be in format (batch, num_features, embedding_size)
