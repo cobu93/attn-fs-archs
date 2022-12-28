@@ -47,10 +47,11 @@ class TTransformerEncoderLayer(nn.TransformerEncoderLayer):
             
             src2 = self.norm1(src)
             src2, weights = self.self_attn(src2, src2, src2, attn_mask=src_mask)
-            src = src + self.dropout1(src2)
+            src = src + src2
 
             src2 = self.norm2(src)
-            src = src + self.ff_network(src2)
+            src2 = self.ff_network(src2)
+            src = src + src2
 
             if self.self_attn.batch_first:
                 batch_size = src.shape[-3]
