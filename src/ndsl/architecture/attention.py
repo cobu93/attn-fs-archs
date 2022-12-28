@@ -33,7 +33,8 @@ class TTransformerEncoderLayer(nn.Module):
                             n_head,
                             in_proj_container,
                             ScaledDotProduct(dropout=attn_dropout),
-                            torch.nn.Linear(embed_dim, embed_dim)
+                            torch.nn.Linear(embed_dim, embed_dim),
+                            batch_first=True
                         )
 
         self.ff_network = nn.Sequential(
