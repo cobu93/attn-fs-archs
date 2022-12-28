@@ -132,13 +132,12 @@ class TabularTransformer(nn.Module):
         self.n_numerical_features = 0
 
         self.n_numerical = n_numerical
-        self.numerical_encoders = nn.ModuleList()
+        self.numerical_encoder = None
 
         if self.numerical_passthrough:
             self.n_numerical_features = self.n_numerical
         else:
-            for _ in range(n_numerical):
-                self.numerical_encoders.append(NumericalEncoder(embed_dim))
+            self.numerical_encoder = NumericalEncoder(embed_dim, self.n_numerical)
             
         self.__need_weights = need_weights
 
@@ -157,7 +156,7 @@ class TabularTransformer(nn.Module):
         # The default aggregator will be ConcatenateAggregator
         if aggregator is None or aggregator == "concatenate":
             self.aggregator = ConcatenateAggregator(
-                embed_dim * (len(n_categories) + len(self.numerical_encoders))
+                embed_dim * (len(n_categories) + (0 if not self.numerical_encoder else self.n_numerical))
             )
         elif aggregator == "cls":
             self.aggregator = CLSAggregator(embed_dim)
@@ -226,9 +225,8 @@ class TabularTransformer(nn.Module):
         if self.numerical_passthrough:
             numerical_embedding = self.numerical_layer_norm(x_numerical)
         else:
-            for ft_idx, encoder in enumerate(self.numerical_encoders):
-                encoding = encoder(x_numerical[:, ft_idx].unsqueeze(1)).unsqueeze(1)
-                embeddings = torch.cat([embeddings, encoding], dim=1)
+            encodings = self.numerical_encoder(x_numerical)
+            embeddings = torch.cat([embeddings, encodings], dim=1)
                 
         # Encodes through transformer encoder
         # Due transpose, the output will be in format (batch, num_features, embedding_size)
