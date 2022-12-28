@@ -28,10 +28,12 @@ class CategoricalOneHotEncoder(FeatureEncoder):
         return out / out.sum(dim=-1, keepdim=True) + self.eps
 
 class NumericalEncoder(FeatureEncoder):
-    def __init__(self, output_size):
+    def __init__(self, output_size, n_numerical):
         super(NumericalEncoder, self).__init__(output_size)
         self.output_size = output_size
-        self.embedding = nn.utils.weight_norm(nn.Linear(1, output_size))
+        self.weights = nn.Parameter(torch.randn(n_numerical, output_size))
+        self.biases = nn.Parameter(torch.randn(n_numerical, output_size))
         
     def forward(self, src):
-        return self.embedding(src)
+        output = src.unsqueeze(-1) * self.weights + self.biases
+        return output
