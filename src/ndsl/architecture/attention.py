@@ -16,9 +16,9 @@ TTransformerEncoderLayer
 Custom transformer layer which return attention cubes(weights)
 
 """
-class TTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    def __init__(self, embed_dim, n_head, n_hid, *args, attn_dropout=0., ff_dropout=0., **kwargs):
-        super(TTransformerEncoderLayer, self).__init__(embed_dim, n_head, n_hid, *args, **kwargs)
+class TTransformerEncoderLayer(nn.Module):
+    def __init__(self, embed_dim, n_head, n_hid, attn_dropout=0., ff_dropout=0.):
+        super(TTransformerEncoderLayer, self).__init__()
         
         in_proj_container = InProjContainer(
                                 torch.nn.Linear(embed_dim, embed_dim),
@@ -26,6 +26,9 @@ class TTransformerEncoderLayer(nn.TransformerEncoderLayer):
                                 torch.nn.Linear(embed_dim, embed_dim)
                             )
 
+        self.pre_norm_1 = nn.LayerNorm(embed_dim)
+        self.pre_norm_2 = nn.LayerNorm(embed_dim)
+        
         self.self_attn = MultiheadAttentionContainer(
                             n_head,
                             in_proj_container,
@@ -45,11 +48,11 @@ class TTransformerEncoderLayer(nn.TransformerEncoderLayer):
                 src_mask: Optional[Tensor] = None
             ) -> Tensor:
             
-            src2 = self.norm1(src)
+            src2 = self.pre_norm_1(src)
             src2, weights = self.self_attn(src2, src2, src2, attn_mask=src_mask)
             src = src + src2
 
-            src2 = self.norm2(src)
+            src2 = self.pre_norm_2(src)
             src2 = self.ff_network(src2)
             src = src + src2
 
