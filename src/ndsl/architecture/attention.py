@@ -154,8 +154,7 @@ class TabularTransformer(nn.Module):
 
         self.n_categories = list(n_categories)
 
-        self.categorical_preprocessor = None
-        #self.numerical_preprocessor = None
+        self.embeddings_preprocessor = None
 
         # The default aggregator will be ConcatenateAggregator
         if aggregator is None or aggregator == "concatenate":
@@ -164,8 +163,7 @@ class TabularTransformer(nn.Module):
             )
         elif aggregator == "cls":
             self.aggregator = CLSAggregator(embed_dim)
-            self.n_categories = [1] + self.n_categories  
-            self.categorical_preprocessor = CLSPreprocessor()
+            self.embeddings_preprocessor = CLSPreprocessor(embed_dim)
         elif aggregator == "max":
             self.aggregator = MaxAggregator(embed_dim)
         elif aggregator == "mean":
@@ -184,7 +182,9 @@ class TabularTransformer(nn.Module):
 
         # Adding 1 for a nan on each column
         self.n_categories = torch.IntTensor([-1] + self.n_categories) + 1
-        self.categorical_encoder = nn.Embedding(self.n_categories.sum().item(), embed_dim)
+        categories_offset = self.n_categories.cumsum(dim=-1)[:-1]
+        self.register_buffer('categories_offset', categories_offset)
+        self.categorical_encoder = nn.Embedding(self.n_categories.sum().item(), embed_dim, norm_type=1.)
         
         #self.decoder = nn.Linear(self.aggregator.output_size + self.n_numerical_features, n_output)
         input_size = self.aggregator.output_size + self.n_numerical_features
@@ -214,16 +214,8 @@ class TabularTransformer(nn.Module):
 
     def forward(self, x_categorical, x_numerical):
 
-        # Preprocess source if needed
-        #if self.numerical_preprocessor is not None:
-        #    x_numerical = self.numerical_preprocessor(x_numerical)
-
-        if self.categorical_preprocessor is not None:
-            x_categorical = self.categorical_preprocessor(x_categorical)
-
         # src came with two dims: (batch_size, num_features)
-        self.n_categories = self.n_categories.to(x_categorical.device)
-        embeddings = self.categorical_encoder(x_categorical + self.n_categories.cumsum(dim=-1)[:-1])
+        embeddings = self.categorical_encoder(x_categorical + self.categories_offset)
 
         numerical_embedding = []
         if self.numerical_passthrough:
@@ -237,6 +229,10 @@ class TabularTransformer(nn.Module):
         output = None
 
         if len(embeddings) > 0:
+
+            if self.embeddings_preprocessor is not None:
+                embeddings = self.embeddings_preprocessor(embeddings)
+
             if self.__need_weights:
                 output, weights = self.transformer_encoder(embeddings)
             else:

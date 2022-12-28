@@ -28,7 +28,7 @@ class MaxAggregator(BaseAggregator):
 class CLSAggregator(BaseAggregator):
     def forward(self, src):
         #src with shape [batch_size, seq_len, num_features]
-        return src[:,0,:]
+        return src[:, 0]
         #src with shape [batch_size, num_features]
 
 class RNNAggregator(BaseAggregator):
