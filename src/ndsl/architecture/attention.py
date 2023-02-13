@@ -93,18 +93,23 @@ class TTransformerEncoder(nn.TransformerEncoder):
         # At the end of the loop it will have a size of:
         # [num_layers, batch, number of heads, number of features, number of features]
         stacked_weights = []
+        stacked_outputs = []
+
+        if self.need_weights:
+            stacked_outputs.append(src)
 
         for mod in self.layers:
             output, weights = mod(output, src_mask=mask)
 
             if self.need_weights:
                 stacked_weights.append(weights)
+                stacked_outputs.append(output)
 
         if self.norm is not None:
             output = self.norm(output)
 
         if self.need_weights:
-            return output, torch.stack(stacked_weights)
+            return output, torch.stack(stacked_outputs), torch.stack(stacked_weights)
 
         return output
 
@@ -235,7 +240,7 @@ class TabularTransformer(nn.Module):
                 embeddings = self.embeddings_preprocessor(embeddings)
 
             if self.__need_weights:
-                output, weights = self.transformer_encoder(embeddings)
+                output, layer_outs, weights = self.transformer_encoder(embeddings)
             else:
                 output = self.transformer_encoder(embeddings)
 
@@ -252,6 +257,6 @@ class TabularTransformer(nn.Module):
         output = self.decoder(output)
 
         if self.__need_weights:
-            return output.squeeze(dim=-1), weights
+            return output.squeeze(dim=-1), layer_outs, weights
 
         return output.squeeze(dim=-1)
