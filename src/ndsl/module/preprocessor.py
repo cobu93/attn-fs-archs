@@ -9,13 +9,16 @@ class BasePreprocessor(nn.Module):
         raise NotImplementedError("This feature hasn't been implemented yet!")
 
 class IdentityPreprocessor(BasePreprocessor):
-
     def forward(self, src):
         return src
 
 class CLSPreprocessor(BasePreprocessor):
+    def __init__(self, embed_dim):
+        super(CLSPreprocessor, self).__init__()
+        self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
+
     def forward(self, src):
         #src with shape [batch_size, seq_len]
-        device = src.get_device()
-        return torch.cat((torch.zeros(src.shape[0],1).long().to(device), src), dim=1)
+        tokens = self.cls_token.repeat(src.shape[0], 1, 1)
+        return torch.cat((tokens, src), dim=1)
         #src with shape [batch_size, seq_len+1]

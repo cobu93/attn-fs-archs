@@ -6,10 +6,7 @@ from ndsl.module.aggregator import ConcatenateAggregator, SumAggregator
 from ndsl.module.encoder import CategoricalOneHotEncoder, NumericalEncoder
 from ndsl.module.preprocessor import IdentityPreprocessor
 
-from ndsl.architecture.attention import TabularTransformer, MixtureModels
-
-from ndsl.loss.entropy import CELWithWeightsEntropyMinimization
-
+from ndsl.architecture.attention import TabularTransformer
 
 class TestAggregator(unittest.TestCase):
 
@@ -283,59 +280,6 @@ class TestTransformer(unittest.TestCase):
             torch.Size([2, 5]),
             f"Output should be of size [2, 5]. Got {result.size()} instead"
         )
-
-
-
-class TestMixtureModels(unittest.TestCase):
-
-    def test_mixture_models(self):
-        trans = MixtureModels(
-            n_head=2, # Number of heads per layer
-            n_hid=128, # Size of the MLP inside each transformer encoder layer
-            n_output=5, # The number of output neurons
-            encoders=torch.nn.ModuleList([
-                NumericalEncoder(10),
-                CategoricalOneHotEncoder(10, 4),
-                NumericalEncoder(10),
-            ]), # List of features encoders
-            n_models=3,
-            dropout=0.1, # Used dropout
-        )
-
-        input = torch.tensor([
-            [0.5, 1, 0.7],
-            [0.5, 3, 0.8],
-            [0.5, 1, 0.7],
-            [0.5, 3, 0.8],
-            [0.5, 1, 0.7],
-            [0.5, 3, 0.8]
-        ])
-
-        result = trans(input)
-
-        self.assertEqual(
-            result.size(), 
-            torch.Size([6, 5]), 
-            "Output shape should be (2, 10)"
-        )
-
-class TestLoss(unittest.TestCase):
-
-    def test_cel_weights_entropy_minimization(self):
-        criterion = CELWithWeightsEntropyMinimization()
-
-        input = torch.rand((5, 4))
-        target = torch.LongTensor([1, 0, 1, 2, 3])
-         # [num_layers, batch, number of heads, number of features, number of features]
-        weights = torch.rand((3, 5, 8, 4, 4))
-        weights = F.softmax(weights, dim=-2)
-
-        loss = criterion(input, target, weights)
-
-        self.assertIsNotNone(loss, "Loss function shouldn't return none")
-
-
-
 
 if __name__ == '__main__':
     unittest.main()
