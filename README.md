@@ -39,7 +39,7 @@ make install
 
 Here we include a snippet containing a basic example of the usage 
 
-```
+```python
 from ndsl.architecture.attention import TabularTransformer
 
 ...
@@ -90,9 +90,9 @@ module = TabularTransformer(
     )
 ```
 
-When __need_weights__ is set to _False_, for $N$ the batch size, the output will be of size $(N, n\_output)$, and when set to _True_ the output will be of 3-tuple containing tensors of sizes
+When __need_weights__ is set to _False_, for $N$ the batch size, the output will be of size $(N, n\_ output)$, and when set to _True_ the output will be of 3-tuple containing tensors of sizes
 
-- $(N, n\_output)$,
-- $(n\_layers + 1, N, n\_features, embedding\_size)$, where the $+1$ in the first dimension means the inclusion of the original embeddings for each feature processed in the MHSA, and $n\_features$ is the number of features processed by the MHSA mechanism deppending on the _numerical_passthrough_ value, and
-- $(n\_layers, N, n\_head, n\_features, n\_features)$ including the attention cubes for each encoder layer.
+- $(N, n\_ output)$,
+- $(n\_ layers + 1, N, n\_ features, embedding\_ size)$, where the $+1$ in the first dimension means the inclusion of the original embeddings for each feature processed in the MHSA, and $n\_ features$ is the number of features processed by the MHSA mechanism deppending on the _numerical_passthrough_ value, and
+- $(n\_ layers, N, n\_ head, n\_ features, n\_ features)$ including the attention cubes for each encoder layer.
 
