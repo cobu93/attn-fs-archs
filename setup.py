@@ -7,10 +7,10 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
      name='ndsl-attn-fs-archs',  
-     version='0.0.6',
+     version='0.0.7',
      author="Under ML",
      author_email="urielcoro@gmail.com",
-     description="Architectures involved in the investigation of Attention Mechanisms as Feature Selection",
+     description="Architecture described in paper: Transformers for high-dimensional tabular data",
      long_description=long_description,
      long_description_content_type="text/markdown",
      url="https://github.com/cobu93/attn-fs-archs",
