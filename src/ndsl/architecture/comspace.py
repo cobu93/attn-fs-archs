@@ -1,30 +1,57 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchtext.nn import MultiheadAttentionContainer, InProjContainer, ScaledDotProduct
-from torch import Tensor
-from typing import Optional
 
 
-from ndsl.module.encoder import NumericalEncoder
+from ndsl.module.encoder import FundamentalEmbeddingsEncoder
 from ndsl.module.preprocessor import CLSPreprocessor
-from ndsl.module.aggregator import ConcatenateAggregator, CLSAggregator, MaxAggregator, MeanAggregator, SumAggregator, RNNAggregator
+from ndsl.module.aggregator import CLSAggregator, MaxAggregator, MeanAggregator, SumAggregator, RNNAggregator
 from ndsl.architecture.attention import TTransformerEncoderLayer, TTransformerEncoder
+
+def build_mlp(
+        n_input,
+        n_output,
+        hidden_units=None,
+        activation_fn=None
+):
+
+    if hidden_units is None: 
+        hidden_units = []
+    
+    sizes = [n_input] + hidden_units + [n_output]
+
+    if activation_fn is None: 
+        activation_fn = nn.Identity()
+
+    if not isinstance(activation_fn, list):
+        activation_fn = [activation_fn for _ in range(len(sizes) - 1)]
+
+    assert len(activation_fn)==len(sizes)-1, "The number of activation functions is not valid"
+        
+    layers = [] 
+
+    for sizes_idx in range(len(sizes)-1):
+        layers.append(nn.Linear(sizes[sizes_idx], sizes[sizes_idx + 1]))
+        layers.append(activation_fn[sizes_idx])   
+            
+    return nn.Sequential(*layers)
+
 
 class CommonSpaceTransformer(nn.Module):
     
     def __init__(
         self, 
-        n_categories, # Number of maximum categories
-        n_bins, # Number of bins for numerical features
         n_head, # Number of heads per layer
         n_hid, # Size of the MLP inside each transformer encoder layer
         n_layers, # Number of transformer encoder layers    
         n_output, # The number of output neurons
         embed_dim,
-        numerical_mean=0,
-        numerical_std=1,
-        n_times_std=3,
+        numerical_encoder_hidden_sizes=[128],
+        numerical_encoder_activations=[nn.ReLU(), nn.Identity()],
+        n_categorical_fundamental_features=1024,
+        n_categories=10,
+        n_fundamental_samples=32,
+        fundamentals_aggregation="max",
         attn_dropout=0., # Used dropout,
         ff_dropout=0., # Used dropout
         aggregator=None, # The aggregator for output vectors before decoder
@@ -34,10 +61,7 @@ class CommonSpaceTransformer(nn.Module):
         need_weights=False
         ):
 
-
         super(CommonSpaceTransformer, self).__init__()
-
-        assert n_bins % 2 == 0, "n_bins must be even"
 
         self.__need_weights = need_weights
 
@@ -48,14 +72,7 @@ class CommonSpaceTransformer(nn.Module):
         self.n_head = n_head
         self.n_hid = n_hid
 
-        self.n_bins = n_bins
-        self.n_categories = n_categories
-
-        self.numerical_mean = numerical_mean
-        self.numerical_std = numerical_std
-        self.n_times_std = n_times_std
-        self.bin_width = 2 * self.n_times_std / self.n_bins
-
+        self.embed_dim = embed_dim
         self.embeddings_preprocessor = None
 
         # The default aggregator will be CLSAggregator
@@ -77,24 +94,28 @@ class CommonSpaceTransformer(nn.Module):
 
         
         # The extra element will be for missed categories
-        self.embeeding_table = nn.Embedding(self.n_bins + self.n_categories + 1, embed_dim)
-        
+        #self.embeeding_table = nn.Embedding(self.n_bins + self.n_categories + 1, embed_dim)
+        self.numerical_encoder = build_mlp(
+            1, #n_input 
+            self.embed_dim, #n_output 
+            numerical_encoder_hidden_sizes, 
+            numerical_encoder_activations
+        )
+
+        self.categorical_encoder = nn.utils.weight_norm(FundamentalEmbeddingsEncoder(
+                        self.embed_dim, 
+                        n_categorical_fundamental_features, 
+                        n_categories,
+                        n_samples=n_fundamental_samples,
+                        aggregation=fundamentals_aggregation), name="fundamentals", dim=0)
+    
         #self.decoder = nn.Linear(self.aggregator.output_size + self.n_numerical_features, n_output)
-        input_size = self.aggregator.output_size
-        if decoder_hidden_units is not None:
-            
-            decoder_layers  = []
-            for decoder_units in decoder_hidden_units:
-                decoder_layers.append(nn.Linear(input_size, decoder_units)) 
-                input_size = decoder_units
-
-                if decoder_activation_fn is not None:
-                    decoder_layers.append(decoder_activation_fn)
-
-            decoder_layers.append(nn.Linear(input_size, n_output))  
-            self.decoder = nn.Sequential(*decoder_layers)
-        else:
-            self.decoder = nn.Linear(self.aggregator.output_size, n_output)
+        self.decoder = build_mlp(
+            self.aggregator.output_size,
+            n_output,
+            hidden_units=decoder_hidden_units,
+            activation_fn=decoder_activation_fn
+        )        
         
     @property
     def need_weights(self):
@@ -110,40 +131,41 @@ class CommonSpaceTransformer(nn.Module):
         # Binning numerical
         ###################
 
-        # Normalizing
-        x_numerical = (x_numerical - self.numerical_mean) / self.numerical_std
-        # Clipping outliers ans assign its bin
-        x_numerical = torch.clip(
-                        x_numerical, 
-                        min=-self.n_times_std, 
-                        max=self.n_times_std
-                    ) // self.bin_width
-        # Moving bins tostart in zero
-        x_numerical += (self.n_bins // 2)
-        x_categorical += self.n_bins + 1
+        batch_size = x_numerical.shape[0]
+        n_numerical_features = x_numerical.shape[1]
+        n_categorical_features = x_categorical.shape[1]
 
-        x = torch.cat([x_categorical, x_numerical], dim=1).to(torch.long)
+        numerical_embedddings = torch.zeros(batch_size, n_numerical_features, self.embed_dim).to(x_numerical.device)
+        categorical_embedddings = torch.zeros(batch_size, n_categorical_features, self.embed_dim).to(x_categorical.device)
 
-        # src came with two dims: (batch_size, num_features)
-        embeddings = self.embeeding_table(x)
-                
+        for ft_idx in range(x_numerical.shape[1]):
+            numerical_embedddings[:, ft_idx] = self.numerical_encoder(x_numerical[:, ft_idx].unsqueeze(1))
+
+        for ft_idx in range(x_categorical.shape[1]):
+            categorical_embedddings[:, ft_idx] = self.categorical_encoder(x_categorical[:, ft_idx])
+        #categorical_embedddings = self.categorical_encoder(x_categorical)
+
+        embeddings = torch.cat([categorical_embedddings, numerical_embedddings], dim=1)
         output = None
 
         if self.embeddings_preprocessor is not None:
             embeddings = self.embeddings_preprocessor(embeddings)
 
+        
         if self.__need_weights:
             output, layer_outs, weights = self.transformer_encoder(embeddings)
         else:
             output = self.transformer_encoder(embeddings)
+
 
         # Aggregation of encoded vectors
         output = self.aggregator(output)
 
         # Decoding
         output = self.decoder(output)
+        #output = output.squeeze(dim=-1)
 
         if self.__need_weights:
-            return output.squeeze(dim=-1), layer_outs, weights
+            return output, layer_outs, weights
 
-        return output.squeeze(dim=-1)
+        return output
