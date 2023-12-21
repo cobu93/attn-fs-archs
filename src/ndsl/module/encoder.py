@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions.chi2 import Chi2
+from ndsl.utils.builder import build_mlp
 
 class FeatureEncoder(nn.Module):
     def __init__(self, output_size):
@@ -39,6 +39,29 @@ class NumericalEncoder(FeatureEncoder):
         output = src.unsqueeze(-1) * self.weights + self.biases
         return output
     
+class MLPEncoder(FeatureEncoder):
+    def __init__(self, 
+                 output_size, 
+                 input_size, 
+                 hidden_sizes=[128], 
+                 activations=[nn.ReLU(), nn.Identity()]
+        ):
+
+        super(MLPEncoder, self).__init__(output_size)
+
+        self.shared_mlp = build_mlp(
+            input_size, 
+            output_size,
+            hidden_sizes, 
+            activations
+        )
+        
+    def forward(self, src):
+        batch_size, n_features = src.shape
+        output = self.shared_mlp(src.view(batch_size * n_features, 1))
+        output = output.view(batch_size, n_features, self.output_size)
+        return output
+    
 class CategoricalEncoder(FeatureEncoder):
     def __init__(self, output_size, n_categories, variational=True):
         super(CategoricalEncoder, self).__init__(output_size)
@@ -51,12 +74,13 @@ class CategoricalEncoder(FeatureEncoder):
     def forward(self, src):
 
         means = self.categories_means[src]
-        norm_means = (means.T / torch.norm(means, dim=-1)).T
+        norm_means = (means / torch.norm(means, dim=-1, keepdim=True))
 
         if self.training and self.variational:
             logvars = self.categories_logvars[src]
-            z = torch.randn(src.shape[0], self.output_size).to(src.device)
+            z = torch.randn(*logvars.shape).to(src.device)
             embeddings = (z * torch.exp(0.5 * logvars)) + norm_means
+            embeddings = embeddings / torch.norm(embeddings, dim=-1, keepdim=True)
         else:
             embeddings = norm_means
                 
